@@ -1,0 +1,174 @@
+Table ORDERS (FACT): PRIMARY KEY(order_id, marketplace_id)
+marketplace_id    INTEGER
+order_id          INTEGER
+customer_id       INTEGER
+item              VARCHAR(255)
+units             INTEGER           
+order_date        DATE
+ 
+SAMPLE DATA
+marketplace_id     order_id    customer_id     item    units       order_date  
+1                  9021        123             A22     1           2021-02-01
+3                  8763        241             T14     1           2021-01-14            
+1                  4321        123             C13     2           2020-11-17        
+1                  6757        443             A22     3           2020-12-07         
+1                  3008        443             H59     1           2021-01-08       
+1                  2190        768             Q30     0           2021-01-29         
+1                  3741        943             P12     1           2021-01-03
+ 
+Table CATALOG (DIM): PRIMARY KEY(item, marketplace_id)
+marketplace_id           INTEGER
+item                     VARCHAR(255)
+product_group            VARCHAR(20)
+has_bullet_points        CHAR(1)
+has_customer_reviews     CHAR(1)
+
+
+SAMPLE DATA
+marketplace_id      item        product_group   has_bullet_points    has_customer_reviews             
+1                   A22         books           Y                    Y                
+1                   T14         electronics     Y                    N
+3                   B20         books                                N
+1                   C13         games                                N
+1                   Q72         games           N                    Y
+4                   A22         electronics     Y                    Y
+1                   T87         music           N                    Y
+3                   A22         books           Y                    Y            
+1                   H59         books                                N
+1                   Q30         games           Y                    Y
+1                   P12         toys                                 Y 
+
+Given the tables above, get the top 10 best selling items for each product group in the US in 2020 and how much each item contributed to the total sales of the product group.
+
+Expected output columns: item, product_group, total_units, percentage_of_product_group_sales
+
+*/
+
+
+Answer
+ *** Commands ***
+To get the top 10 best-selling items for each product group in the US in 2020 and the percentage of each item's sales within its product group, we can follow these steps:
+
+Filter the ORDERS table for orders in 2020.
+Join the ORDERS table with the CATALOG table on marketplace_id and item to get the product_group.
+Aggregate the total units sold per item per product group.
+Rank each item within its product group based on units sold to get the top 10 items per group.
+Calculate the percentage contribution of each item to its product group sales.
+Here is the SQL query to accomplish this:
+
+WITH Sales2020 AS (
+    -- Step 1: Filter orders for the US (marketplace_id = 1) and year 2020
+    SELECT 
+        o.item,
+        c.product_group,
+        SUM(o.units) AS total_units
+    FROM 
+        ORDERS o
+    JOIN 
+        CATALOG c ON o.item = c.item AND o.marketplace_id = c.marketplace_id
+    WHERE 
+        o.marketplace_id = 1
+        AND o.order_date BETWEEN '2020-01-01' AND '2020-12-31'
+    GROUP BY 
+        c.product_group, o.item
+),
+ProductGroupSales AS (
+    -- Step 2: Calculate the total units sold per product group
+    SELECT 
+        product_group,
+        SUM(total_units) AS group_total_units
+    FROM 
+        Sales2020
+    GROUP BY 
+        product_group
+),
+RankedSales AS (
+    -- Step 3: Rank each item within its product group based on total units sold
+    SELECT 
+        s.item,
+        s.product_group,
+        s.total_units,
+        pg.group_total_units,
+        RANK() OVER (PARTITION BY s.product_group ORDER BY s.total_units DESC) AS sales_rank
+    FROM 
+        Sales2020 s
+    JOIN 
+        ProductGroupSales pg ON s.product_group = pg.product_group
+)
+-- Step 4: Filter to get top 10 items per product group and calculate the percentage contribution
+SELECT 
+    item,
+    product_group,
+    total_units,
+    ROUND(100.0 * total_units / group_total_units, 2) AS percentage_of_product_group_sales
+FROM 
+    RankedSales
+WHERE 
+    sales_rank <= 10
+ORDER BY 
+    product_group, total_units DESC;
+
+
+
+To optimize Step 1 in the query for performance, let’s focus on ways to efficiently filter and aggregate data from the ORDERS table before the join with CATALOG. Here are several key techniques that could improve performance in this step:
+
+1. Indexing
+Composite Index on ORDERS(marketplace_id, order_date):
+Since we are filtering by marketplace_id = 1 and by the order_date range, a composite index on (marketplace_id, order_date) can speed up this filtering.
+If these columns are highly selective (e.g., they significantly reduce the dataset size), the database can quickly eliminate irrelevant rows.
+Index on ORDERS(item) and CATALOG(item, marketplace_id):
+Since we are joining ORDERS with CATALOG on item and marketplace_id, adding indexes on these columns in both tables can speed up the join operation.
+Specifically, a composite index on CATALOG(item, marketplace_id) may improve join performance by allowing the database to quickly locate matching rows.
+2. Filter Early
+Filtering data early reduces the number of rows processed in subsequent steps, so it's beneficial to apply the date and marketplace_id filter immediately. This can be done by:
+
+Filtering in a Subquery:
+
+Using a subquery that first applies the marketplace_id and order_date filter can help the database focus on a smaller subset of data before any aggregations or joins.
+
+SELECT 
+    item,
+    marketplace_id,
+    SUM(units) AS total_units
+FROM 
+    ORDERS
+WHERE 
+    marketplace_id = 1 
+    AND order_date BETWEEN '2020-01-01' AND '2020-12-31'
+GROUP BY 
+    item, marketplace_id
+Partitioned Tables (if possible):
+
+If ORDERS is a very large table and frequently filtered by date, consider partitioning it by order_date. This allows the database to only scan relevant partitions (e.g., the partition for the year 2020), reducing the data volume for this query.
+3. Aggregation Optimization
+Group before Join: Aggregate the total units per item within ORDERS before joining with CATALOG, reducing the number of rows passed to the join.
+Temporary Tables for Large Aggregates: If ORDERS is exceptionally large, consider storing the filtered and aggregated data in a temporary table. Temporary tables can reduce computation if the same aggregation needs to be referenced multiple times.
+4. Query Rewrite for Efficient Filtering and Joining
+
+A final version of Step 1 might look like this:
+
+-- Step 1 Optimization: Filter early, aggregate, and index join columns
+SELECT 
+    o.item,
+    c.product_group,
+    SUM(o.units) AS total_units
+FROM 
+    (SELECT 
+         item, marketplace_id, units
+     FROM 
+         ORDERS
+     WHERE 
+         marketplace_id = 1 
+         AND order_date BETWEEN '2020-01-01' AND '2020-12-31'
+    ) AS o
+JOIN 
+    CATALOG c ON o.item = c.item AND o.marketplace_id = c.marketplace_id
+GROUP BY 
+    c.product_group, o.item;
+
+Summary
+Indexes on marketplace_id, order_date, and item columns.
+Filter early by using a subquery to reduce rows before the join and aggregation.
+Aggregate before the join to minimize data handled in subsequent steps.
+Consider partitioning on order_date if ORDERS is large and commonly filtered by date.
+These strategies collectively should improve performance in Step 1 by reducing the amount of data processed and optimizing how data is accessed.
